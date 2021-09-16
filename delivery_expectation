@@ -1,0 +1,253 @@
+### Question 1
+library('xgboost')
+train_df = read.csv("dataframe_train.csv")
+
+# 1a. Initial Data Pre-processing¶
+### EDD
+str(train_df)
+head(train_df)
+summary(train_df)
+quantile(train_df$grid_distance,0.99999) # 10298.84
+subset(train_df,grid_distance>10000)
+
+# remove outlier with grid_distance > 6000
+df_filter = subset(train_df,grid_distance<=10000)
+
+process_data_train = function(df){
+  select_cols_train = c('action_type','level','weather_grade','source_type',
+                  'courier_wave_start_lng','courier_wave_start_lat',
+                  'speed','max_load',
+                  'source_lng','source_lat','target_lng','target_lat',
+                  'grid_distance','urgency','hour','expected_use_time')
+  df$action_type = as.factor(df$action_type)
+  df$level = as.factor(df$level)
+  df$weather_grade = as.factor(df$weather_grade)
+  df$source_type = as.factor(df$source_type)
+  df$hour = as.factor(df$hour)
+  result_df = subset(df,select=select_cols)
+  return(result_df)
+}
+
+df_select_train = process_data_train(df_filter)
+str(df_select_train)
+summary(df_select_train)
+
+df.dataframe = data.frame(model.matrix(~.,df_select_train[,1:15]))
+df.dataframe$expected_use_time = df_select_train$expected_use_time
+
+# 1b. Baseline
+library('glmnet')
+library('caret')
+set.seed(100)
+training.rows <- sample(1:nrow(df.dataframe), nrow(df.dataframe)*0.7)
+df.train = df.dataframe[training.rows,]
+df.test = df.dataframe[-training.rows,]
+X.train = as.matrix(df.train[,1:37])
+Y.train = df.train$expected_use_time
+X.test = as.matrix(df.test[,1:37])
+Y.test = df.test$expected_use_time
+
+set.seed(100)
+trControl_baseline <- trainControl(method  = "cv", number  = 5)
+lasso_cv<- train(expected_use_time~., method = "glmnet",trControl=trControl_baseline,
+                 tuneGrid = expand.grid(alpha=1,lambda = seq(0,1,0.05)),
+                 metric='MAE',data = df.train)
+lasso_cv
+
+lasso_model = glmnet(X.train, Y.train,family="gaussian", alpha=1, lambda=0.25)
+lasso_model
+predict.test.lasso = predict(lasso_model,newx=X.test)
+MAE(predict.test.lasso,Y.test)
+
+# 1c. XGBT model
+xgb_train = xgb.DMatrix(data = X.train, label = Y.train)
+xgb_test = xgb.DMatrix(data = X.test, label = Y.test)
+
+set.seed(100)
+xgbt_cv = xgb.cv(data=xgb_train, nrounds = 30, early_stopping_rounds = 5, nfold=3, metrics = 'mae', showsd=FALSE,
+                 max_depth = 10, eta = 0.1, gamma = 0.001,lambda=1,colsample_bynode=0.8,
+                 objective = "reg:squarederror")
+xgbt_cv
+set.seed(100)
+model.xgbt = xgboost(data = xgb_train,nrounds = 21, max_depth = 10, eta = 0.1,
+                     gamma = 0.001,lambda=1,colsample_bynode=0.8,
+                     objective = "reg:squarederror",
+                     eval_metric='mae')
+xgb.importance(model=model.xgbt)
+predict.test.xgb = predict(model.xgbt,X.test)
+MAE(predict.test.xgb,Y.test)
+
+# 1d. Further Feature Engineering
+# clustering based on source_lat,source_lng,target_lat,target_lng
+set.seed(100)
+cluster.df.train = X.train[,c('source_lat','source_lng','target_lat','target_lng')]
+plot(cluster.df.train[,1:2])
+plot(cluster.df.train[,3:4])
+
+zmeans <- apply(cluster.df.train,2,mean) #1:row; 2:column,normalize the whole dataset
+zsds <- apply(cluster.df.train,2,sd)
+Cluster_nor <- scale(cluster.df.train,center = zmeans, scale = zsds)
+cluster_k = kmeans(Cluster_nor, centers = 10)
+
+# add cluster label to all records and remove 'source_lat','source_lng','target_lat','target_lng'
+library(flexclust)
+cluster.kcca = as.kcca(cluster_k, Cluster_nor)
+
+cluster.df.all = df_select_train[,c('source_lat','source_lng','target_lat','target_lng')]
+zmeans.all <- apply(cluster.df.all,2,mean) #1:row; 2:column,normalize the whole dataset
+zsds.all <- apply(cluster.df.all,2,sd)
+Cluster_nor_all <- scale(cluster.df.all,center = zmeans.all, scale = zsds.all)
+loc_Clusters_all = as.factor(predict(cluster.kcca, newdata = Cluster_nor_all))
+
+select_cols_train_2 = c('action_type','level','weather_grade','source_type',
+                'courier_wave_start_lng','courier_wave_start_lat',
+                'speed','max_load',
+                'grid_distance','urgency','hour','expected_use_time')
+df_select_train_cluster = df_select_train[,select_cols_train_2][,1:11]
+df_select_train_cluster$cluster = loc_Clusters_all
+df.dataframe.cluster = data.frame(model.matrix(~.,df_select_train_cluster))
+df.dataframe.cluster$expected_use_time = df_select_train$expected_use_time
+
+df.train.cluster = df.dataframe.cluster[training.rows,]
+df.test.cluster = df.dataframe.cluster[-training.rows,]
+X.train.cluster = as.matrix(df.train.cluster[,1:42])
+Y.train.cluster = df.train.cluster$expected_use_time
+X.test.cluster = as.matrix(df.test.cluster[,1:42])
+Y.test.cluster = df.test.cluster$expected_use_time
+
+xgb_train_cluster = xgb.DMatrix(data = X.train.cluster, label = Y.train.cluster)
+xgb_test_cluster = xgb.DMatrix(data = X.test.cluster, label = Y.test.cluster)
+
+set.seed(100)
+xgbt_cv2 = xgb.cv(data=xgb_train_cluster, nrounds = 30, early_stopping_rounds = 5, nfold=3, metrics = 'mae', showsd=FALSE,
+                 max_depth = 10, eta = 0.1, gamma = 0.001,lambda=1,colsample_bynode=0.8,
+                 objective = "reg:squarederror")
+xgbt_cv2
+set.seed(100)
+model.xgbt.cluster = xgboost(data = xgb_train_cluster,nrounds = 21, max_depth = 10, eta = 0.1,
+                     gamma = 0.001,lambda=1,colsample_bynode=0.8,
+                     objective = "reg:squarederror",
+                     eval_metric='mae')
+xgb.importance(model=model.xgbt.cluster)
+predict.test.xgb.cluster = predict(model.xgbt.cluster,X.test.cluster)
+MAE(predict.test.xgb.cluster,Y.test.cluster)
+
+# 1e. Predict Result
+test_df =  read.csv("dataframe_test.csv")
+regression_csv = read.csv("Regression.csv")
+
+process_data_test = function(df){
+  df$action_typePICKUP = 1-df$action_type_DELIVERY
+  select_cols_test = c('action_typePICKUP','level','weather_grade','source_type',
+                  'courier_wave_start_lng','courier_wave_start_lat',
+                  'speed','max_load',
+                  'source_lng','source_lat','target_lng','target_lat',
+                  'grid_distance','urgency','hour')
+  df$level = as.factor(df$level)
+  df$weather_grade = as.factor(df$weather_grade)
+  df$source_type = as.factor(df$source_type)
+  df$hour = as.factor(df$hour)
+  result_df = subset(df,select=select_cols_test)
+  return(result_df)
+}
+df_select_result = process_data_test(test_df)
+cluster.df.test = df_select_result[,c('source_lat','source_lng','target_lat','target_lng')]
+zmeans.test <- apply(cluster.df.test,2,mean) #1:row; 2:column,normalize the whole dataset
+zsds.test <- apply(cluster.df.test,2,sd)
+Cluster_nor_test <- scale(cluster.df.test,center = zmeans.test, scale = zsds.test)
+loc_Clusters_test = as.factor(predict(cluster.kcca, newdata = Cluster_nor_test))
+
+select_cols_test_2 = c('action_typePICKUP','level','weather_grade','source_type',
+                'courier_wave_start_lng','courier_wave_start_lat',
+                'speed','max_load',
+                'grid_distance','urgency','hour')
+df_select_result_cluster = df_select_result[,select_cols_test_2]
+df_select_result_cluster$cluster = loc_Clusters_test
+df.result.cluster = data.frame(model.matrix(~.,df_select_result_cluster))
+df.result.cluster$hour7 = 0
+X.result.cluster = as.matrix(subset(df.result.cluster,select=colnames(X.test.cluster)))
+pred.result = predict(model.xgbt.cluster, X.result.cluster)
+regression_csv$expected_use_time = as.numeric(pred.result)
+
+write.csv(regression_csv,file='Jing_Rongjia_Final_Project.csv',row.names = FALSE)
+result  = read.csv("Jing_Rongjia_Final_Project.csv")
+head(result)
+
+
+### Question 2
+# 2a. Balance check
+library(foreign)
+df1 = read.dta("oregonhie_descriptive_vars.dta")
+head(df1)
+df2 = read.dta("oregonhie_stateprograms_vars.dta")
+head(df2)
+df3 = read.dta("oregonhie_ed_vars.dta")
+head(df3)
+
+## Balance check on ED sample
+# merge 3 df into all-df (N= 74922)
+df3$label = 1
+df_m2 = merge(df1, df2, 
+              by.x = "person_id", 
+              by.y = "person_id", 
+              all.x = T,
+              all.y = F)
+df_all = merge(df_m2, df3, 
+               by.x = "person_id", 
+               by.y = "person_id", 
+               all.x = T,
+               all.y = F)
+
+# Initial Data Pre-processing 
+df_all = transform(df_all, portland = ifelse(is.na(label),0,1))
+df_all = transform(df_all, numhouse_1 = ifelse(numhh_list=="signed self up + 1 additional person",1,0))
+df_all = transform(df_all, numhouse_2 = ifelse(numhh_list=="signed self up + 2 additional person",1,0))
+df_all$treatment = ifelse(df_all$treatment=="Selected",1,0)
+
+#OLS regression
+OLS_portland = lm(portland ~treatment+numhouse_1+numhouse_2, data = df_all)
+summary(OLS_portland)#p-value:0.68,cannot reject H0, balance
+
+## Balance check on 5 variables
+# merge 3 df into df-portland (N=24646)
+df_m1 = merge(df3, df2, 
+              by.x = "person_id", 
+              by.y = "person_id", 
+              all.x = T,
+              all.y = F)
+df_port = merge(df_m1, df1, 
+                by.x = "person_id", 
+                by.y = "person_id", 
+                all.x = T,
+                all.y = F)
+
+# Initial Data Pre-processing 
+df_port = transform(df_port, numhouse_1 = ifelse(numhh_list=="signed self up + 1 additional person",1,0))
+df_port = transform(df_port, numhouse_2 = ifelse(numhh_list=="signed self up + 2 additional person",1,0))
+df_port = transform(df_port, gender = ifelse(female_list=="0: Male", 0, 1))
+df_port = transform(df_port, selfsign = ifelse(self_list=="Signed self up", 1, 0))
+df_port = transform(df_port, visit_ED = ifelse(any_visit_pre_ed=="Yes", 1, 0))
+df_port$treatment = ifelse(df_port$treatment=="Selected",1,0)
+
+#OLS regression 
+OLS_birthyear = lm(birthyear_list ~ treatment+numhouse_1+numhouse_2, data = df_port)
+OLS_female = lm(gender ~ treatment+numhouse_1+numhouse_2, data = df_port)
+OLS_selfsign = lm(selfsign ~ treatment+numhouse_1+numhouse_2, data = df_port)
+OLS_visitED = lm(visit_ED ~ treatment+numhouse_1+numhouse_2, data = df_port)
+OLS_numED = lm(num_visit_pre_cens_ed ~ treatment+numhouse_1+numhouse_2, data = df_port)
+
+summary(OLS_birthyear)# p-value: 0.529, cannot reject H0 
+summary(OLS_female) #p-value:0.132, cannot reject H0
+summary(OLS_selfsign) #p-value:0.383, cannot reject H0
+summary(OLS_visitED) #p-value:0.583, cannot reject H0
+summary(OLS_numED)#p-value:0.979,cannot reject H0
+
+
+
+### 2b.Casual Effect 
+df_port = transform(df_port, enroll = ifelse(ohp_all_ever_firstn_30sep2009=="Enrolled", 1, 0))
+
+OLS_enroll = lm(enroll ~ treatment+numhouse_1+numhouse_2
+                +birthyear_list +gender +selfsign +visit_ED+ num_visit_pre_cens_ed, data = df_port)
+summary(OLS_enroll) #ATE =0.2462176
+
