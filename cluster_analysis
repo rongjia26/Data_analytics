@@ -1,0 +1,131 @@
+ph<- read.csv("C:/Users/Surface/Desktop/big data/Pharmaceuticals.csv")
+str(ph)
+attach(ph)
+
+library(dplyr)
+dat<- ph%>%
+  select("Market_Cap","Beta","PE_Ratio","ROE","ROA",
+         "Asset_Turnover","Leverage","Rev_Growth","Net_Profit_Margin")
+dat
+#1: choose variable to analyze - ggpair
+library(GGally)
+contlist <- ph[,c("Market_Cap","Beta","PE_Ratio","ROE","ROA",
+                  "Asset_Turnover","Leverage","Rev_Growth","Net_Profit_Margin")]
+ggpairs(contlist)
+library(dplyr)
+dat<- ph%>%
+  select("Market_Cap","Beta","PE_Ratio","ROE","ROA",
+         "Asset_Turnover","Leverage","Rev_Growth","Net_Profit_Margin")
+pairs(dat)
+
+
+#2: plot the scatter plot using company name and recommendation 
+plot(Market_Cap~Net_Profit_Margin,data = ph,
+     xlab="Net Profit Margin",ylab="Market Capitalization",
+     main="Market Capitalization and Net Profit Margin by Company Name")
+with(ph,text(Market_Cap~Net_Profit_Margin,labels = ph$Symbol,pos = 3))
+# 
+plot(Market_Cap~Net_Profit_Margin,data = ph,
+     xlab="Net Profit Margin",ylab="Market Capitalization",
+     main="Market Capitalization and Net Profit Margin by Recommendation")
+with(ph,text(Market_Cap~Net_Profit_Margin,labels = ph$Median_Recommendat?phion,pos = 3))
+
+#normalize
+zt <- ph[,-c(1,2,12,13,14)]
+
+zmeans <- apply(zt,2,mean) #1:row; 2:column
+zsds <- apply(zt,2,sd)
+znor <- scale(zt,center = zmeans, scale = zsds) #normalized data
+#Distance
+zdis <- dist(znor)
+print(zdis,digits = 3)
+write.csv(zdis, file = "~/desktop/distance.csv")
+
+#3: choose number of cluster using - Scree plot
+
+zwss <- (nrow(znor)-1)*sum(apply(znor,2,var))              
+for (i  in 2:20) zwss[i] <- sum(kmeans(znor,centers = i)$withinss)
+plot(1:20,zwss,type="b",
+     xlab = "Number of Clusters",
+     ylab = "Within Group Sum of Squares",
+     main="Scree Plot of Clusters")
+
+#4: K-Means
+set.seed(1234) #fixed kc cluster size
+kcl2 <- kmeans(znor,2)
+kcl2
+kcl3 <- kmeans(znor,3)
+kcl3
+kcl4 <- kmeans(znor,4)
+kcl4
+kcl5 <- kmeans(znor,5)
+kcl5 
+kcl6 <- kmeans(znor,6)
+kcl6
+kcl7 <- kmeans(znor,7)
+kcl7
+
+##five is better?
+##cluster membership
+member = cutree(myclu,5)
+table(member)
+
+member = cutree(myclu,6)
+table(member)
+
+
+
+#5??? Characterizing Clusters
+myclu <- hclust(zdis)
+zmem6 <- cutree(myclu,6)
+aggregate(mydata[,-c(1,1)],list(member),mean)
+agg6df <- as.data.frame(agg6)
+
+agg666<- aggregate(dat,list(zmem6),mean,digit =3 )
+agg667<-as.data.frame(agg666)
+
+
+
+write.csv(agg6,file="C:/Users/Surface/desktop/agg666.csv")
+
+#6: hierarchical cluster
+myclu <- hclust(zdis)
+plot(myclu, hang = -1, #all starts from -1,
+     labels = ph$Symbol,xlab = "distance",
+     main= "Cluster Dendrogram by Company Name" ) 
+rect.hclust(myclu,k = 5 , border="red")
+
+plot(myclu, hang = -1, #all starts from -1,
+     labels = ph$Median_Recommendation,
+     xlab = "distance",
+     main= "Cluster Dendrogram by Recommendation") 
+rect.hclust(myclu,k = 6 , border="green")
+
+plot(myclu, hang = -1, #all starts from -1,
+     labels = ph$Location,
+     xlab = "distance",
+     main= "Cluster Dendrogram by Location") 
+rect.hclust(myclu,k = 6 , border="blue")
+
+#7: Silhouette Plot
+library(cluster)
+plot(silhouette(cutree(myclu,6),zdis),
+     main = "Silhouette Plot of Cluster")
+#silhouette width:higher the better
+
+
+#8: k-means clustering
+set.seed(1234) #fixed kc cluster size
+kcl6 <- kmeans(znor,6)
+plot(Market_Cap~Net_Profit_Margin, data = ph,
+     col = kcl6$cluster, xlab="Net Profit Margin",ylab="Market Capitalization",
+     main="Market Capitalization and Net Profit Margin by Company Name")
+summary(ph$Market_Cap)
+
+#9: Plot
+set.seed(1234) 
+clusplot(znor,kcl6$cluster,
+         color = T,shade = T,
+         labels = 2,lines = 0, main = "Cluster Plot")
+
+summary(ph$Market_Cap)
